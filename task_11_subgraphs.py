@@ -1,183 +1,143 @@
-from typing import Annotated, TypedDict
-from pprint import pprint
+from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
-
-from langchain_core.messages import SystemMessage
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 
 
 # ==========================================================
 # State
 # ==========================================================
 
-class GraphState(TypedDict):
-    messages: Annotated[list, add_messages]
+class TravelState(TypedDict):
+    destination: str
     hotel: str
+    flight_reserved: bool
 
 
 # ==========================================================
-# Hotels
+# Nodes
 # ==========================================================
 
-HOTELS = {
-    "Tunisia": [
-        "Golden Tulip",
-        "Movenpick Sousse",
-        "Iberostar Selection",
-    ],
-    "Spain": [
-        "Hotel Ritz Madrid",
-        "Barcelona Princess",
-        "Gran Hotel Bali",
-    ],
-    "France": [
-        "Le Meurice",
-        "Hotel Lutetia",
-        "Shangri-La Paris",
-    ],
-}
+def hotel_node(state: TravelState):
 
+    print("\n========== HOTEL NODE ==========")
 
-# ==========================================================
-# Tool
-# ==========================================================
-
-@tool
-def search_hotel(country: str) -> str:
-    """Search hotels by country."""
-
-    hotels = HOTELS.get(country)
-
-    if hotels is None:
-        return f"No hotels found in {country}."
-
-    return "\n".join(hotels)
-
-
-def update_hotel_state(state: GraphState):
-
-    last_message = state["messages"][-1]
-
-    if isinstance(last_message, ToolMessage):
-        data = json.loads(last_message.content)
-
-        return {
-            "hotel": data["hotel"]
-        }
-
-    return {}
-
-# ==========================================================
-# LLM
-# ==========================================================
-
-llm = ChatOpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
-    model="qwen2.5:14b",
-    temperature=0,
-)
-
-hotel_llm = llm.bind_tools([search_hotel])
-
-
-# ==========================================================
-# Prompt
-# ==========================================================
-
-HOTEL_PROMPT = SystemMessage(
-    content="""
-You are a hotel assistant.
-
-If the user asks for a hotel in a country,
-ALWAYS use the search_hotel tool.
-
-Never answer from memory.
-"""
-)
-
-
-# ==========================================================
-# Agent
-# ==========================================================
-
-def hotel_agent(state: GraphState):
-
-    print("\n========== HOTEL AGENT ==========")
-    pprint(state)
-
-    response = hotel_llm.invoke(
-        [
-            HOTEL_PROMPT,
-            *state["messages"],
-        ]
-    )
-
-    print("\nLLM Response")
-    print(response)
-
-    print("\nTool Calls")
-    print(response.tool_calls)
+    destination = state["destination"]
 
     return {
-        "messages": [response]
+        "hotel": f"Hotel booked in {destination}"
+    }
+
+
+def flight_node(state: TravelState):
+
+    print("\n========== FLIGHT NODE ==========")
+
+    return {
+        "flight_reserved": True
     }
 
 
 # ==========================================================
-# Tool Node
+# Build Subgraph
 # ==========================================================
 
-tool_node = ToolNode([search_hotel])
+travel_builder = StateGraph(TravelState)
 
+travel_builder.add_node("hotel", hotel_node)
+travel_builder.add_node("flight", flight_node)
 
-# ==========================================================
-# Graph
-# ==========================================================
-
-graph = StateGraph(GraphState)
-
-graph.add_node("hotel_agent", hotel_agent)
-graph.add_node("tools", tool_node)
-
-graph.add_edge(START, "hotel_agent")
-
-graph.add_conditional_edges(
-    "hotel_agent",
-    tools_condition,
-    {
-        "tools": "tools",
-        END: END,
-    },
-)
-
-graph.add_edge("tools", "hotel_agent")
-
-app = graph.compile()
+travel_builder.add_edge(START, "hotel")
+travel_builder.add_edge("hotel", "flight")
+travel_builder.add_edge("flight", END)
 
 
 # ==========================================================
-# Run
+# Compile
+# ==========================================================
+
+travel_graph = travel_builder.compile()
+
+
+# ==========================================================
+# Test
 # ==========================================================
 
 if __name__ == "__main__":
 
-    result = app.invoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    "Find me a hotel in Spain."
-                )
-            ]
-        }
-    )
+    initial_state = {
+        "destination": "Spain",
+        "hotel": "",
+        "flight_reserved": False,
+    }
 
-    print("\n========== FINAL ==========\n")
+    result = travel_graph.invoke(initial_state)
 
-    for message in result["messages"]:
-        message.pretty_print()
+    print("\n========== FINAL STATE ==========\n")
+
+    print(result)
+
+
+
+
+#parnet state 
+class MainState(TypedDict):
+    destination: str
+    hotel: str
+    flight_reserved: bool
+
+#Notice that it contains the same fields required by the travel_graph.
+
+def supervisor_node(state: MainState):
+
+    print("\n========== SUPERVISOR ==========")
+
+    print("Starting the travel workflow...")
+
+    return {}
+
+main_builder = StateGraph(MainState)
+
+
+
+#The key idea is that a compiled graph can be added as a node.
+main_builder.add_node(
+    "supervisor",
+    supervisor_node,
+)
+
+main_builder.add_node(
+    "travel",
+    travel_graph,
+)
+
+
+main_builder.add_edge(
+    START,
+    "supervisor",
+)
+
+main_builder.add_edge(
+    "supervisor",
+    "travel",
+)
+
+main_builder.add_edge(
+    "travel",
+    END,
+)
+
+main_graph = main_builder.compile()
+
+if __name__ == "__main__":
+
+    initial_state = {
+        "destination": "Spain",
+        "hotel": "",
+        "flight_reserved": False,
+    }
+
+    result = main_graph.invoke(initial_state)
+
+    print("\n========== FINAL STATE ==========\n")
+
+    print(result)
