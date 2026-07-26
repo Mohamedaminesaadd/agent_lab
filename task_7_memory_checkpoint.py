@@ -25,6 +25,7 @@ def chatbot(state: GraphState):
 
     response = AIMessage(
         content=f"You said: {last_message.content}"
+        # here were you can add llm
     )
 
     return {
@@ -76,7 +77,7 @@ app.invoke(
             HumanMessage(content="Hello")
         ]
     },
-    config=config
+    config=config #for the session(thread id) each user have her converstation id 
 )
 
 

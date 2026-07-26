@@ -25,7 +25,7 @@ def multiply(a: int, b: int):
     """Multiply two numbers."""
     return a * b
 
-
+# put all the tools in list Tools 
 tools = [add, multiply]
 
 # ---------------- LLM ---------------- #
@@ -35,6 +35,7 @@ llm = ChatOpenAI(
     api_key="ollama",
     model="qwen2.5:14b",
 )
+
 
 llm = llm.bind_tools(tools)
 

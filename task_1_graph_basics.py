@@ -26,7 +26,7 @@ def final_node(state: GraphState):
 #buide the graphe 
 graph = StateGraph(GraphState)
 
-#add noued 
+# add noued 
 graph.add_node("greeting",greeting_node)
 graph.add_node("uppercase_node",uppercase_node)
 graph.add_node("finale_node",final_node)

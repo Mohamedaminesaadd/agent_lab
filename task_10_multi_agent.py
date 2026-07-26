@@ -1,84 +1,103 @@
 """
-Architecture multi-agents LangGraph : superviseur + 3 spécialistes (hôtel, vol, RH).
+==========================================================
+LANGGRAPH MULTI-AGENT SYSTEM
+==========================================================
 
-Topologie du graphe :
-
-    START -> supervisor -> (hotel_agent | flight_agent | hr_agent | END)
-
-    hotel_agent  -> hotel_tools  -> hotel_agent  -> supervisor
-    flight_agent -> flight_tools -> flight_agent -> supervisor
-    hr_agent     -> hr_tools     -> hr_agent     -> supervisor
-
-Chaque agent = base_llm + prompt système dédié + sous-ensemble d'outils.
-Le superviseur ne répond jamais à l'utilisateur : il ne fait que router.
+Sections
+1. Imports
+2. Graph State
+3. Tools
+4. LLM Configuration
+5. Prompts
+6. Tool Binding
+7. Agents
+8. Supervisor
+9. Tool Nodes
+10. Graph Construction
+11. Execution
+==========================================================
 """
 
-from typing import Annotated, Literal, TypedDict
+# ==========================================================
+# 1. IMPORTS
+# ==========================================================
+
+from pprint import pprint
+from typing import Annotated, TypedDict
 
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, START, StateGraph
+
+from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 
-# --------------------------------------------------------------------------- #
-# 1. État partagé
-# --------------------------------------------------------------------------- #
+# ==========================================================
+# 2. GRAPH STATE
+# ==========================================================
 
 class GraphState(TypedDict):
-    # Historique de conversation (reducer add_messages = append + dédup par id)
+
     messages: Annotated[list, add_messages]
 
-    # Décision du superviseur, lue par la fonction de routage
     next_agent: str
 
-    # Informations métier partagées entre agents
     hotel: str
+
     flight_reserved: bool
+
     vacation_requested: bool
 
-    # Garde-fou anti-boucle infinie (le superviseur peut re-router indéfiniment)
-    steps: int
 
-
-MAX_STEPS = 10
-
-
-# --------------------------------------------------------------------------- #
-# 2. Outils
-# --------------------------------------------------------------------------- #
-# Règle : un outil DOIT retourner une string (ou un objet sérialisable).
-# Les versions dupliquées de ton fichier (serachHotel, reservation_airplane)
-# ne retournaient rien -> le ToolMessage aurait été vide.
+# ==========================================================
+# 3. TOOLS
+# ==========================================================
 
 HOTELS = {
-    "Tunisia": ["Golden Tulip", "Movenpick Sousse", "Iberostar Selection"],
-    "Spain": ["Hotel Ritz Madrid", "Barcelona Princess", "Gran Hotel Bali"],
-    "France": ["Le Meurice", "Hotel Lutetia", "Shangri-La Paris"],
+    "Tunisia": [
+        "Golden Tulip",
+        "Movenpick Sousse",
+        "Iberostar Selection",
+    ],
+    "Spain": [
+        "Hotel Ritz Madrid",
+        "Barcelona Princess",
+        "Gran Hotel Bali",
+    ],
+    "France": [
+        "Le Meurice",
+        "Hotel Lutetia",
+        "Shangri-La Paris",
+    ],
 }
 
 
 @tool
 def search_hotel(country: str) -> str:
-    """Rechercher les hôtels disponibles dans un pays donné."""
-    result = HOTELS.get(country)
-    if result is None:
-        return f"Aucun hôtel trouvé pour {country}."
-    return "\n".join(result)
+    """Search hotels."""
+
+    hotels = HOTELS.get(country)
+
+    if hotels is None:
+        return f"No hotels found in {country}."
+
+    return "\n".join(hotels)
 
 
 @tool
 def reserve_airplane(destination: str) -> str:
-    """Réserver un billet d'avion vers une destination."""
-    return f"Vol réservé avec succès vers {destination}."
+    """Reserve an airplane ticket."""
+
+    return f"Flight to {destination} reserved successfully."
 
 
 @tool
 def take_vacation(days: int) -> str:
-    """Notifier les RH d'une demande de congé."""
-    return f"Demande de congé de {days} jour(s) envoyée aux RH."
+    """Notify HR."""
+
+    return f"Vacation for {days} days approved."
 
 
 hotel_tools = [search_hotel]
@@ -86,9 +105,9 @@ flight_tools = [reserve_airplane]
 hr_tools = [take_vacation]
 
 
-# --------------------------------------------------------------------------- #
-# 3. LLM de base + agents (base_llm + prompt + bind_tools)
-# --------------------------------------------------------------------------- #
+# ==========================================================
+# 4. LLM CONFIGURATION
+# ==========================================================
 
 base_llm = ChatOpenAI(
     base_url="http://localhost:11434/v1",
@@ -97,166 +116,196 @@ base_llm = ChatOpenAI(
     temperature=0,
 )
 
-# Le superviseur n'a AUCUN outil : il produit uniquement un mot-clé.
-supervisor_llm = base_llm
-
 hotel_llm = base_llm.bind_tools(hotel_tools)
 flight_llm = base_llm.bind_tools(flight_tools)
 hr_llm = base_llm.bind_tools(hr_tools)
 
 
+# ==========================================================
+# 5. PROMPTS
+# ==========================================================
+
 HOTEL_PROMPT = SystemMessage(
-    content="""Tu es un spécialiste de la réservation d'hôtels.
+    content="""
+You are the Hotel Specialist.
 
-Responsabilités :
-- Rechercher des hôtels via l'outil search_hotel
-- Recommander un hôtel
-- Répondre aux questions hôtelières
+Responsibilities:
+- Search hotels.
+- Recommend hotels.
 
-Interdictions :
-- Réserver un avion
-- Contacter les RH
+Always call the search_hotel tool.
+
+Never reserve flights.
+Never notify HR.
 """
 )
 
 FLIGHT_PROMPT = SystemMessage(
-    content="""Tu es un expert en réservation de vols.
+    content="""
+You are the Flight Specialist.
 
-Ta seule responsabilité est de réserver des billets d'avion via reserve_airplane.
+Responsibilities:
+- Reserve airplane tickets.
 
-Ne recommande jamais d'hôtel. Ne contacte jamais les RH.
+Always call reserve_airplane.
+
+Never search hotels.
+Never notify HR.
 """
 )
 
 HR_PROMPT = SystemMessage(
-    content="""Tu travailles aux Ressources Humaines.
+    content="""
+You are the HR Specialist.
 
-Ta seule tâche est de notifier les RH qu'un employé part en congé via take_vacation.
+Responsibilities:
+- Notify HR about vacations.
 
-Ne recherche jamais d'hôtel. Ne réserve jamais de vol.
-"""
-)
+Always call take_vacation.
 
-SUPERVISOR_PROMPT = SystemMessage(
-    content="""Tu es le superviseur d'une agence de voyage.
-
-Ton rôle n'est PAS de répondre à l'utilisateur.
-Ta seule responsabilité est de décider quel spécialiste doit travailler ensuite.
-
-Spécialistes disponibles :
-- hotel   : rechercher et recommander des hôtels
-- flight  : réserver un billet d'avion
-- hr      : notifier les RH d'un congé
-
-Si toutes les tâches demandées sont terminées, réponds : finish
-
-Réponds par UN SEUL mot, sans ponctuation ni explication :
-hotel
-flight
-hr
-finish
+Never reserve flights.
+Never search hotels.
 """
 )
 
 
-# --------------------------------------------------------------------------- #
-# 4. Nœuds
-# --------------------------------------------------------------------------- #
+# ==========================================================
+# 6. AGENTS
+# ==========================================================
 
-VALID_AGENTS = {"hotel", "flight", "hr", "finish"}
+def hotel_agent(state: GraphState):
 
+    print("\n========== HOTEL AGENT ==========")
+    pprint(state)
 
-def _sync_flags(state: GraphState) -> dict:
-    """
-    Dérive les drapeaux métier depuis les ToolMessages déjà présents.
-    Évite d'avoir à muter l'état à l'intérieur des ToolNode (impossible).
-    """
-    flags = {
-        "hotel": state.get("hotel", ""),
-        "flight_reserved": state.get("flight_reserved", False),
-        "vacation_requested": state.get("vacation_requested", False),
+    last_message = state["messages"][-1]
+
+    if isinstance(last_message, ToolMessage):
+
+        selected_hotel = last_message.content.split("\n")[0]
+
+        print("Selected Hotel:", selected_hotel)
+
+        return {
+            "hotel": selected_hotel
+        }
+
+    response = hotel_llm.invoke(
+        [
+            HOTEL_PROMPT,
+            *state["messages"],
+        ]
+    )
+
+    print(response.tool_calls)
+
+    return {
+        "messages": [response]
     }
 
-    for msg in state["messages"]:
-        if not isinstance(msg, ToolMessage):
-            continue
-        if msg.name == "search_hotel":
-            flags["hotel"] = msg.content
-        elif msg.name == "reserve_airplane":
-            flags["flight_reserved"] = True
-        elif msg.name == "take_vacation":
-            flags["vacation_requested"] = True
 
-    return flags
+def flight_agent(state: GraphState):
 
+    print("\n========== FLIGHT AGENT ==========")
+    pprint(state)
 
-def supervisor(state: GraphState) -> dict:
-    flags = _sync_flags(state)
-    steps = state.get("steps", 0) + 1
+    last_message = state["messages"][-1]
 
-    # Garde-fou : on coupe avant la boucle infinie
-    if steps > MAX_STEPS:
-        return {"next_agent": "finish", "steps": steps, **flags}
+    if isinstance(last_message, ToolMessage):
 
-    # On donne au superviseur l'état d'avancement, sinon il re-route en boucle
-    context = SystemMessage(
-        content=(
-            "État actuel des tâches :\n"
-            f"- hôtel recherché : {'oui' if flags['hotel'] else 'non'}\n"
-            f"- vol réservé : {'oui' if flags['flight_reserved'] else 'non'}\n"
-            f"- congé demandé : {'oui' if flags['vacation_requested'] else 'non'}"
-        )
+        print("Flight Reserved")
+
+        return {
+            "flight_reserved": True
+        }
+
+    response = flight_llm.invoke(
+        [
+            FLIGHT_PROMPT,
+            *state["messages"],
+        ]
     )
 
-    response = supervisor_llm.invoke(
-        [SUPERVISOR_PROMPT, *state["messages"], context]
+    print(response.tool_calls)
+
+    return {
+        "messages": [response]
+    }
+
+
+def hr_agent(state: GraphState):
+
+    print("\n========== HR AGENT ==========")
+    pprint(state)
+
+    last_message = state["messages"][-1]
+
+    if isinstance(last_message, ToolMessage):
+
+        print("HR Notified")
+
+        return {
+            "vacation_requested": True
+        }
+
+    response = hr_llm.invoke(
+        [
+            HR_PROMPT,
+            *state["messages"],
+        ]
     )
 
-    # Normalisation défensive : un petit modèle local ajoute souvent du bruit
-    decision = response.content.strip().lower().split()
-    decision = decision[0].strip(".,:;\"'") if decision else "finish"
-    if decision not in VALID_AGENTS:
+    print(response.tool_calls)
+
+    return {
+        "messages": [response]
+    }
+
+
+# ==========================================================
+# 7. SUPERVISOR
+# ==========================================================
+
+def supervisor(state: GraphState):
+
+    print("\n========== SUPERVISOR ==========")
+    pprint(state)
+
+    if state["hotel"] == "":
+        decision = "hotel"
+
+    elif not state["flight_reserved"]:
+        decision = "flight"
+
+    elif not state["vacation_requested"]:
+        decision = "hr"
+
+    else:
         decision = "finish"
 
-    print(f"\n===== SUPERVISOR (step {steps}) -> {decision} =====")
+    print("Decision:", decision)
 
-    # Important : on ne renvoie PAS response dans messages,
-    # la décision du superviseur ne fait pas partie de la conversation.
-    return {"next_agent": decision, "steps": steps, **flags}
-
-
-def hotel_agent(state: GraphState) -> dict:
-    response = hotel_llm.invoke([HOTEL_PROMPT, *state["messages"]])
-    return {"messages": [response]}
+    return {
+        "next_agent": decision
+    }
 
 
-def flight_agent(state: GraphState) -> dict:
-    response = flight_llm.invoke([FLIGHT_PROMPT, *state["messages"]])
-    return {"messages": [response]}
+def supervisor_router(state: GraphState):
+    return state["next_agent"]
 
 
-def hr_agent(state: GraphState) -> dict:
-    response = hr_llm.invoke([HR_PROMPT, *state["messages"]])
-    return {"messages": [response]}
+# ==========================================================
+# 8. TOOL NODES
+# ==========================================================
 
-
-# ToolNode exécute automatiquement tous les tool_calls du dernier AIMessage
 hotel_tool_node = ToolNode(hotel_tools)
 flight_tool_node = ToolNode(flight_tools)
 hr_tool_node = ToolNode(hr_tools)
 
 
-# --------------------------------------------------------------------------- #
-# 5. Routage
-# --------------------------------------------------------------------------- #
-
-def route_supervisor(state: GraphState) -> Literal["hotel", "flight", "hr", "finish"]:
-    return state["next_agent"]
-
-
-# --------------------------------------------------------------------------- #
-# 6. Construction du graphe
-# --------------------------------------------------------------------------- #
+# ==========================================================
+# 9. BUILD GRAPH
+# ==========================================================
 
 graph = StateGraph(GraphState)
 
@@ -273,10 +322,9 @@ graph.add_node("hr_tools", hr_tool_node)
 
 graph.add_edge(START, "supervisor")
 
-# Superviseur -> spécialiste (ou fin)
 graph.add_conditional_edges(
     "supervisor",
-    route_supervisor,
+    supervisor_router,
     {
         "hotel": "hotel_agent",
         "flight": "flight_agent",
@@ -285,45 +333,74 @@ graph.add_conditional_edges(
     },
 )
 
-# Pour chaque agent : tools_condition renvoie "tools" ou END.
-# Le path_map remappe "tools" vers le ToolNode dédié,
-# et END vers le superviseur (l'agent a fini son tour).
-for agent, tools_node in (
-    ("hotel_agent", "hotel_tools"),
-    ("flight_agent", "flight_tools"),
-    ("hr_agent", "hr_tools"),
-):
-    graph.add_conditional_edges(
-        agent,
-        tools_condition,
-        {"tools": tools_node, END: "supervisor"},
-    )
-    graph.add_edge(tools_node, agent)  # retour à l'agent pour interpréter le résultat
+graph.add_conditional_edges(
+    "hotel_agent",
+    tools_condition,
+    {
+        "tools": "hotel_tools",
+        END: "supervisor",
+    },
+)
 
-app = graph.compile()
+graph.add_edge("hotel_tools", "hotel_agent")
+
+graph.add_conditional_edges(
+    "flight_agent",
+    tools_condition,
+    {
+        "tools": "flight_tools",
+        END: "supervisor",
+    },
+)
+
+graph.add_edge("flight_tools", "flight_agent")
+
+graph.add_conditional_edges(
+    "hr_agent",
+    tools_condition,
+    {
+        "tools": "hr_tools",
+        END: "supervisor",
+    },
+)
+
+graph.add_edge("hr_tools", "hr_agent")
+
+app = graph.compile(debug = True)
 
 
-# --------------------------------------------------------------------------- #
-# 7. Exécution
-# --------------------------------------------------------------------------- #
+# ==========================================================
+# 10. RUN
+# ==========================================================
 
 if __name__ == "__main__":
-    initial_state: GraphState = {
+
+    initial_state = {
+
         "messages": [
             (
                 "user",
-                "Je pars en vacances en Tunisie pendant 7 jours. "
-                "Trouve-moi un hôtel, réserve le vol et préviens les RH.",
+                "I want to travel to Spain. "
+                "Find me a hotel, reserve my flight "
+                "and notify HR that I will be on vacation for 7 days."
             )
         ],
+
         "next_agent": "",
+
         "hotel": "",
+
         "flight_reserved": False,
+
         "vacation_requested": False,
-        "steps": 0,
     }
 
-    final_state = app.invoke(initial_state, config={"recursion_limit": 50})
+    result = app.invoke(initial_state)
 
-    for message in final_state["messages"]:
+    print("\n========== FINAL STATE ==========")
+    pprint(result)
+
+    print("\n========== FINAL CONVERSATION ==========")
+
+    for message in result["messages"]:
         message.pretty_print()

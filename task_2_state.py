@@ -24,6 +24,7 @@ def greeting_node(state:GrapheState):
         "greeting":greeting
     }
 
+
 def age_node(state:GrapheState):
     """append adult or minor to the greeting"""
 
@@ -53,6 +54,8 @@ def final_node(state:GrapheState):
 # ==========================
 graph = StateGraph(GrapheState)
 
+
+#add the node to the graphe  (here will be a agent)
 graph.add_node("greeting", greeting_node)
 graph.add_node("age", age_node)
 graph.add_node("final", final_node)
@@ -63,6 +66,8 @@ graph.add_edge("greeting", "age")
 graph.add_edge("age", "final")
 graph.add_edge("final", END)
 
+
+# we compile the graphe 
 app = graph.compile()
 
 

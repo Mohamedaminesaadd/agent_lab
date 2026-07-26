@@ -37,7 +37,7 @@ graph.add_edge(START, "node_rand")
 
 #On ne peut pas accéder au state en dehors d'un node
 
-# if faur creer une fonction de routage
+# if faur creer une fonction de routage function that look like node
 
 
 def router(state: GraphState):

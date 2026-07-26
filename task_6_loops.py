@@ -31,7 +31,7 @@ def node_valid(state: GraphState):
 def router(state: GraphState):
     if state["number1"] == state["number2"]:
         return "valid"
-
+    
     return "retry"
 
 
